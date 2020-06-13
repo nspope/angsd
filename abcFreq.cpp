@@ -90,7 +90,8 @@ void abcFreq::printArg(FILE *argFile){
   
   fprintf(argFile,"\t-beagleProb\t%d (Dump beagle style postprobs)\n",beagleProb);
   fprintf(argFile,"\t-indFname\t%s (file containing individual inbreedcoeficients)\n",indFname);
-  fprintf(argFile,"\t-underFlowProtect\t%d (file containing individual inbreedcoeficients)\n",underflowprotect);
+  fprintf(argFile,"\t-underFlowProtect\t%d (guard against underflow)\n",underflowprotect);
+  fprintf(argFile,"\t-expectedCounts\t%d (Dump posterior expectation of derived allele counts)\n",expectedCounts);
   fprintf(argFile,"NB These frequency estimators requires major/minor -doMajorMinor\n");
 }
 
@@ -134,19 +135,12 @@ void abcFreq::getOptions(argStruct *arguments){
   if(indFname !=NULL)
     indF = angsd::readDouble(indFname,arguments->nInd);
 
-
-
-
-
   if(doMaf==0 )//&& doPost==0?
     return;
   underflowprotect=angsd::getArg("-underFlowProtect",underflowprotect,arguments);
   chisq1 = new Chisqdist(1);
   chisq2 = new Chisqdist(2);
   chisq3 = new Chisqdist(3);
-
-
-
   
   minMaf=angsd::getArg("-minMaf",minMaf,arguments);
   //  assert(minMaf<=1&&minMaf>=0);
@@ -205,6 +199,7 @@ void abcFreq::getOptions(argStruct *arguments){
   doCounts=angsd::getArg("-doCounts",doCounts,arguments);
 
   beagleProb=angsd::getArg("-beagleProb",beagleProb,arguments);
+  expectedCounts=angsd::getArg("-expectedCounts",expectedCounts,arguments);
   minInd=angsd::getArg("-minInd",minInd,arguments);
 
   if(abs(doMaf)==0 &&doPost==0)
@@ -242,7 +237,12 @@ void abcFreq::getOptions(argStruct *arguments){
   }
 
   if(beagleProb && doPost==0 &&inputtype!=INPUT_VCF_GP){
-    fprintf(stderr,"Must supply -doPost 1 to write beaglestyle postprobs\n");
+    fprintf(stderr,"Must supply -doPost > 0 to write beaglestyle postprobs\n");
+    exit(0);
+  }
+
+  if(expectedCounts && doPost==0 && inputtype!=INPUT_VCF_GP){
+    fprintf(stderr,"Must supply -doPost > 0 to write expected counts of derived allele\n");
     exit(0);
   }
 
@@ -261,10 +261,12 @@ abcFreq::abcFreq(const char *outfiles,argStruct *arguments,int inputtype){
   chisq1=chisq2=chisq3=NULL;
   inputIsBeagle =0;
   beagleProb = 0; //<-output for beagleprobs
+  expectedCounts = 0; //calculate expected counts of derived allele
   minMaf =-1.0;
   SNP_pval = 1;
   nInd = arguments->nInd;
   eps = 0.001;
+  outfileZ3 = NULL;
   outfileZ2 = NULL;
   outfileZ = NULL;
   indFname = NULL;
@@ -288,9 +290,6 @@ abcFreq::abcFreq(const char *outfiles,argStruct *arguments,int inputtype){
     }else
       return;
   }
-
-
-
   
   getOptions(arguments);
 
@@ -307,6 +306,10 @@ abcFreq::abcFreq(const char *outfiles,argStruct *arguments,int inputtype){
     if(beagleProb){
       postfix=".beagle.gprobs.gz";
       outfileZ2 = aio::openFileBG(outfiles,postfix);
+    }
+    if(expectedCounts){
+      postfix=".ecounts.gz";
+      outfileZ3 = aio::openFileBG(outfiles,postfix);
     }
   }else
     doMaf=abs(doMaf);
@@ -375,7 +378,7 @@ abcFreq::~abcFreq(){
 
 
 void abcFreq::print(funkyPars *pars) {
-  if(outfileZ==NULL&&outfileZ2==NULL)
+  if(outfileZ==NULL&&outfileZ2==NULL&&outfileZ3==NULL)
     return;
 
   freqStruct *freq =(freqStruct *) pars->extras[index];
@@ -416,12 +419,13 @@ void abcFreq::print(funkyPars *pars) {
     aio::bgzf_write(outfileZ,bufstr.s,bufstr.l);  
     bufstr.l=0;
   }
+
   if(beagleProb){
     //beagle format
     for(int s=0;s<pars->numSites;s++) {
       
       if(pars->keepSites[s]==0)
-	continue;
+        continue;
       // fprintf(stderr,"keepsites=%d\n",pars->keepSites[s]);
       aio::kputs(header->target_name[pars->refId],&bufstr);
       aio::kputc('_',&bufstr);
@@ -436,7 +440,7 @@ void abcFreq::print(funkyPars *pars) {
       assert(major!=4&&minor!=4);
 	
       for(int i=0;i<3*pars->nInd;i++) {
-	ksprintf(&bufstr, "\t%f",pars->post[s][i]);
+        ksprintf(&bufstr, "\t%f",pars->post[s][i]);
       }
       
       aio::kputc('\n',&bufstr);
@@ -446,9 +450,40 @@ void abcFreq::print(funkyPars *pars) {
     int ret=aio::bgzf_write(outfileZ2,bufstr.s,bufstr.l);
     bufstr.l=0;
     //fprintf(stderr,"ret.l:%d bufstr.l:%zu\n",ret,bufstr.l);
-
   }
 
+  if(expectedCounts){
+    //expected counts of derived allele
+    for(int s=0;s<pars->numSites;s++) {
+      
+      if(pars->keepSites[s]==0)
+        continue;
+
+      int major = pars->major[s];
+      int minor = pars->minor[s];
+
+      assert(major!=4&&minor!=4);
+	
+      int k=0;
+      for(int i=0;i<pars->nInd;i++) {
+        double gno=0.;
+        bool is_missing;
+        for(int j=0;j<3;j++) {
+          is_missing = j ? pars->post[s][k]==1./3. : 
+                           is_missing && pars->post[s][k]==1./3.;
+          gno += double(j)*pars->post[s][k];
+          k++;
+        }
+        if (skipMissing && is_missing)
+          ksprintf(&bufstr, "NaN\t");
+        else
+          ksprintf(&bufstr, "%f\t", gno);
+      }
+      aio::kputc('\n',&bufstr);
+    }
+    int ret=aio::bgzf_write(outfileZ3,bufstr.s,bufstr.l);
+    bufstr.l=0;
+  }
 }
 
 

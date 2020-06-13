@@ -32,6 +32,7 @@ private:
 
   BGZF *outfileZ;
   BGZF *outfileZ2;
+  BGZF *outfileZ3;
 
   int doMaf;
   double rmTriallelic;
@@ -45,6 +46,7 @@ private:
   double SNP_pval;
   double SNP_pval_tri;
   int beagleProb;
+  int expectedCounts;
   int minInd;
   int inputIsBeagle;
   int skipMissing;
