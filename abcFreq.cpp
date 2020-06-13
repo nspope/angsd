@@ -355,6 +355,16 @@ abcFreq::abcFreq(const char *outfiles,argStruct *arguments,int inputtype){
     aio::bgzf_write(outfileZ2,bufstr.s,bufstr.l);
     bufstr.l=0;
   }
+  if(expectedCounts){
+    aio::kputs("chromo\tposition\tmajor\tminor",&bufstr);
+    for(int i=0;i<arguments->nInd;i++){
+      aio::kputs("\tInd",&bufstr);
+      aio::kputw(i,&bufstr);
+    }
+    aio::kputc('\n',&bufstr);
+    aio::bgzf_write(outfileZ3,bufstr.s,bufstr.l);
+    bufstr.l=0;
+  }
 
 }
 
@@ -365,6 +375,9 @@ abcFreq::~abcFreq(){
   }
   if(outfileZ2!=NULL){
     bgzf_close(outfileZ2);
+  }
+  if(outfileZ3!=NULL){
+    bgzf_close(outfileZ3);
   }
   free(refName);
   free(ancName);
@@ -462,6 +475,11 @@ void abcFreq::print(funkyPars *pars) {
       int major = pars->major[s];
       int minor = pars->minor[s];
 
+      aio::kputs(header->target_name[pars->refId],&bufstr);aio::kputc('\t',&bufstr);
+      aio::kputw(pars->posi[s]+1,&bufstr);aio::kputc('\t',&bufstr);
+      aio::kputc(intToRef[major],&bufstr);aio::kputc('\t',&bufstr);
+      aio::kputc(intToRef[minor],&bufstr);
+
       assert(major!=4&&minor!=4);
 	
       int k=0;
@@ -475,9 +493,9 @@ void abcFreq::print(funkyPars *pars) {
           k++;
         }
         if (skipMissing && is_missing)
-          ksprintf(&bufstr, "NaN\t");
+          ksprintf(&bufstr, "\tNaN");
         else
-          ksprintf(&bufstr, "%f\t", gno);
+          ksprintf(&bufstr, "\t%f", gno);
       }
       aio::kputc('\n',&bufstr);
     }
